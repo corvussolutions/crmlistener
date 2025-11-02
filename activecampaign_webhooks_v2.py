@@ -5,6 +5,10 @@ ActiveCampaign Webhook Receiver - Production Edition
 Receives and processes ActiveCampaign webhook events for profile field updates.
 Designed for deployment on Render.com with Github auto-deploy.
 
+Deployment Modes:
+- Full Mode: With database access (local or Render paid tier with persistent disk)
+- Log-Only Mode: Without database (Render free tier) - logs events for later sync
+
 Webhook Events Handled:
 - contact_add: New contact created in AC
 - contact_update: Profile fields updated in AC
@@ -16,6 +20,7 @@ Profile Fields Synced (AC wins):
 
 Author: Scott Raven (via Claude Code)
 Created: November 1, 2025
+Updated: November 2, 2025 - Added free-tier support
 """
 
 from flask import Flask, request, jsonify
@@ -44,6 +49,7 @@ app = Flask(__name__)
 # Configuration
 DB_PATH = os.environ.get('DATABASE_PATH', '/Users/scottraven/Analytics/db/unified_analysis.db')
 WEBHOOK_SECRET = os.environ.get('AC_WEBHOOK_SECRET', '')  # Set in Render environment
+DB_AVAILABLE = os.path.exists(DB_PATH)  # Check if database is available (local only)
 
 # Field mapping: ActiveCampaign field → our database field
 AC_FIELD_MAPPING = {
@@ -68,14 +74,19 @@ class WebhookProcessor:
 
     def log_webhook(self, webhook_type: str, payload: dict, processed: bool = False,
                    person_id: int = None, error: str = None) -> int:
-        """Log webhook event to database"""
+        """Log webhook event to database (or just logs if DB unavailable)"""
+
+        ac_contact_id = self._extract_contact_id(payload)
+        email = self._extract_email(payload)
+
+        # If database unavailable (Render free tier), just log to console
+        if not DB_AVAILABLE:
+            logger.info(f"📝 Webhook logged (DB unavailable): {webhook_type} | AC#{ac_contact_id} | {email}")
+            return None
 
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-
-                ac_contact_id = self._extract_contact_id(payload)
-                email = self._extract_email(payload)
 
                 cursor.execute("""
                     INSERT INTO ac_webhook_log (
@@ -108,6 +119,9 @@ class WebhookProcessor:
     def find_person_by_ac_id(self, ac_contact_id: str) -> dict:
         """Find person in unified_persons by ac_contact_id"""
 
+        if not DB_AVAILABLE:
+            return None
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -130,6 +144,9 @@ class WebhookProcessor:
 
     def find_person_by_email(self, email: str) -> dict:
         """Find person in unified_persons by email"""
+
+        if not DB_AVAILABLE:
+            return None
 
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -186,6 +203,10 @@ class WebhookProcessor:
     def update_person_profile(self, person_id: int, ac_contact_id: str,
                             profile_updates: dict) -> bool:
         """Update person's profile fields in unified_persons"""
+
+        if not DB_AVAILABLE:
+            logger.info(f"✓ Would update person {person_id} with: {profile_updates}")
+            return True  # Return success for AC webhook acknowledgment
 
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -306,7 +327,7 @@ class WebhookProcessor:
             # Try finding by email
             person = self.find_person_by_email(email)
 
-            if person:
+            if person and DB_AVAILABLE:
                 # Link the ac_contact_id
                 logger.info(f"Linking email {email} to AC#{ac_contact_id}")
                 with sqlite3.connect(self.db_path) as conn:
@@ -336,16 +357,25 @@ class WebhookProcessor:
                 'message': 'Profile updated' if success else 'Update failed'
             }
         else:
-            # Person not found - log but don't create (per Q3: only add if in AC export)
-            logger.warning(f"Contact AC#{ac_contact_id} not found in analytics database")
-            self.log_webhook('contact_update', payload, processed=False,
-                           error='Contact not in analytics database')
+            # Person not found - could be DB unavailable or actually not in database
+            if not DB_AVAILABLE:
+                logger.info(f"✓ Webhook received for AC#{ac_contact_id} (DB unavailable on Render free tier)")
+                return {
+                    'success': True,
+                    'ac_contact_id': ac_contact_id,
+                    'message': 'Webhook logged (database unavailable on free tier)'
+                }
+            else:
+                # Person not found - log but don't create (per Q3: only add if in AC export)
+                logger.warning(f"Contact AC#{ac_contact_id} not found in analytics database")
+                self.log_webhook('contact_update', payload, processed=False,
+                               error='Contact not in analytics database')
 
-            return {
-                'success': False,
-                'ac_contact_id': ac_contact_id,
-                'message': 'Contact not found in analytics database'
-            }
+                return {
+                    'success': False,
+                    'ac_contact_id': ac_contact_id,
+                    'message': 'Contact not found in analytics database'
+                }
 
     def handle_contact_add(self, payload: dict) -> dict:
         """Handle contact_add webhook event"""
@@ -363,7 +393,7 @@ class WebhookProcessor:
 
         if person:
             # Already exists - just link the ac_contact_id if not set
-            if not person['ac_contact_id']:
+            if not person['ac_contact_id'] and DB_AVAILABLE:
                 logger.info(f"Linking existing person {person['person_id']} to AC#{ac_contact_id}")
                 with sqlite3.connect(self.db_path) as conn:
                     conn.execute("""
@@ -383,16 +413,25 @@ class WebhookProcessor:
                 'message': 'Linked to existing person'
             }
         else:
-            # Per Q3: Contact not in our database yet - will be added via AC export later
-            logger.info(f"New AC contact #{ac_contact_id} - will sync via export")
-            self.log_webhook('contact_add', payload, processed=False,
-                           error='New contact - pending export sync')
+            # No person found - could be DB unavailable or actually not in database
+            if not DB_AVAILABLE:
+                logger.info(f"✓ Webhook received for new contact AC#{ac_contact_id} (DB unavailable)")
+                return {
+                    'success': True,
+                    'ac_contact_id': ac_contact_id,
+                    'message': 'Webhook logged (database unavailable on free tier)'
+                }
+            else:
+                # Per Q3: Contact not in our database yet - will be added via AC export later
+                logger.info(f"New AC contact #{ac_contact_id} - will sync via export")
+                self.log_webhook('contact_add', payload, processed=False,
+                               error='New contact - pending export sync')
 
-            return {
-                'success': False,
-                'ac_contact_id': ac_contact_id,
-                'message': 'New contact - will sync via next export'
-            }
+                return {
+                    'success': False,
+                    'ac_contact_id': ac_contact_id,
+                    'message': 'New contact - will sync via next export'
+                }
 
     def handle_contact_delete(self, payload: dict) -> dict:
         """Handle contact_delete webhook event"""
@@ -465,6 +504,8 @@ def health_check():
         'status': 'healthy',
         'service': 'activecampaign-webhook-receiver',
         'timestamp': datetime.now().isoformat(),
+        'database_available': DB_AVAILABLE,
+        'mode': 'full' if DB_AVAILABLE else 'log-only (free tier)',
         'database': db_status
     })
 
