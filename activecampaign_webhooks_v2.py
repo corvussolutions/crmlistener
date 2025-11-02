@@ -439,14 +439,14 @@ def health_check():
 
     # Check database and disk status
     db_status = {
-        'configured_path': DATABASE_PATH,
-        'path_exists': os.path.exists(DATABASE_PATH),
-        'parent_exists': os.path.exists(os.path.dirname(DATABASE_PATH)),
+        'configured_path': DB_PATH,
+        'path_exists': os.path.exists(DB_PATH),
+        'parent_exists': os.path.exists(os.path.dirname(DB_PATH)),
         'is_writable': False
     }
 
     # Check if parent directory is writable
-    parent_dir = os.path.dirname(DATABASE_PATH)
+    parent_dir = os.path.dirname(DB_PATH)
     if os.path.exists(parent_dir):
         db_status['is_writable'] = os.access(parent_dir, os.W_OK)
 
