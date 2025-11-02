@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: analytics-webhook-receiver
+    env: python
+    region: oregon  # Change to your preferred region
+    plan: free  # Free tier - 750 hours/month
+    buildCommand: pip install -r requirements-webhook.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 src.unified.activecampaign_webhooks_v2:app
+    envVars:
+      - key: DATABASE_PATH
+        value: /opt/render/project/src/db/unified_analysis.db  # Adjust path as needed
+      - key: AC_WEBHOOK_SECRET
+        sync: false  # Set manually in Render dashboard
+      - key: PYTHON_VERSION
+        value: 3.11.5
+    healthCheckPath: /health
+    autoDeploy: true  # Auto-deploy on git push
+
+# Optional: If you need a persistent disk for database
+# (Uncomment if webhook needs to write to database file)
+# disk:
+#   name: analytics-db
+#   mountPath: /opt/render/project/src/db
+#   sizeGB: 1
