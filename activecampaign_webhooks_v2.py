@@ -434,10 +434,38 @@ def verify_webhook_signature(request_data: bytes, signature: str) -> bool:
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Render"""
+    import os
+    from pathlib import Path
+
+    # Check database and disk status
+    db_status = {
+        'configured_path': DATABASE_PATH,
+        'path_exists': os.path.exists(DATABASE_PATH),
+        'parent_exists': os.path.exists(os.path.dirname(DATABASE_PATH)),
+        'is_writable': False
+    }
+
+    # Check if parent directory is writable
+    parent_dir = os.path.dirname(DATABASE_PATH)
+    if os.path.exists(parent_dir):
+        db_status['is_writable'] = os.access(parent_dir, os.W_OK)
+
+    # Check if /var/data exists (persistent disk mount point)
+    if os.path.exists('/var/data'):
+        db_status['mount_point_exists'] = True
+        db_status['mount_point_writable'] = os.access('/var/data', os.W_OK)
+        try:
+            db_status['mount_point_contents'] = os.listdir('/var/data')
+        except:
+            db_status['mount_point_contents'] = 'error listing'
+    else:
+        db_status['mount_point_exists'] = False
+
     return jsonify({
         'status': 'healthy',
         'service': 'activecampaign-webhook-receiver',
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'database': db_status
     })
 
 
