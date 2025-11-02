@@ -452,8 +452,36 @@ def webhook_handler():
             logger.warning("Invalid webhook signature")
             return jsonify({'error': 'Invalid signature'}), 401
 
-        # Parse payload
-        payload = request.json
+        # Parse payload - ActiveCampaign might send as form data or JSON
+        content_type = request.headers.get('Content-Type', '')
+
+        if 'application/json' in content_type:
+            payload = request.json
+        elif 'application/x-www-form-urlencoded' in content_type:
+            # AC sends form-encoded data with 'contact[field]' format
+            payload = {
+                'type': request.form.get('type', 'contact_update'),
+                'contact': {}
+            }
+
+            # Extract contact fields from form data
+            for key, value in request.form.items():
+                if key.startswith('contact['):
+                    field_name = key.replace('contact[', '').replace(']', '')
+                    payload['contact'][field_name] = value
+                elif key == 'type':
+                    payload['type'] = value
+
+            logger.info(f"Parsed form-encoded payload: {payload}")
+        else:
+            # Try to parse as JSON anyway
+            try:
+                payload = request.get_json(force=True)
+            except:
+                logger.error(f"Unsupported content type: {content_type}")
+                logger.error(f"Request data: {request.data}")
+                return jsonify({'error': 'Unsupported content type'}), 415
+
         webhook_type = payload.get('type', '')
 
         logger.info(f"Received webhook: {webhook_type}")
