@@ -484,6 +484,11 @@ def webhook_handler():
 
         webhook_type = payload.get('type', '')
 
+        # Normalize webhook type - ActiveCampaign sends 'update', 'add', 'delete'
+        # but we expect 'contact_update', 'contact_add', 'contact_delete'
+        if webhook_type and not webhook_type.startswith('contact_'):
+            webhook_type = f'contact_{webhook_type}'
+
         logger.info(f"Received webhook: {webhook_type}")
 
         # Route to appropriate handler
