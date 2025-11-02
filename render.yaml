@@ -8,7 +8,7 @@ services:
     startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 src.unified.activecampaign_webhooks_v2:app
     envVars:
       - key: DATABASE_PATH
-        value: /opt/render/project/db/unified_analysis.db  # Won't exist on free tier (log-only mode)
+        value: /var/data/unified_analysis.db  # Persistent disk path
       - key: AC_WEBHOOK_SECRET
         sync: false  # Set manually in Render dashboard
       - key: PYTHON_VERSION
@@ -16,5 +16,8 @@ services:
     healthCheckPath: /health
     autoDeploy: true  # Auto-deploy on git push
 
-# Persistent disk requires paid plan ($7/month)
-# Free tier runs in "log-only mode" - webhooks logged to console for later sync
+    # Persistent disk for database storage (paid plan)
+    disk:
+      name: analytics-db
+      mountPath: /var/data
+      sizeGB: 1
