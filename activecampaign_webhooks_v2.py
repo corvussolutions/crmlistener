@@ -607,9 +607,19 @@ def api_profile_updates():
         # Get optional query parameters
         since = request.args.get('since')  # ISO datetime string
         limit = request.args.get('limit', 1000, type=int)
+        include_synced = request.args.get('include_synced', 'false').lower() == 'true'
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+
+        # Ensure synced_to_local column exists (migration)
+        try:
+            cursor.execute("SELECT synced_to_local FROM ac_profile_updates LIMIT 1")
+        except sqlite3.OperationalError:
+            logger.info("Adding synced_to_local column to ac_profile_updates table")
+            cursor.execute("ALTER TABLE ac_profile_updates ADD COLUMN synced_to_local INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE ac_profile_updates ADD COLUMN synced_at TEXT")
+            conn.commit()
 
         # Build query
         query = """
@@ -627,6 +637,11 @@ def api_profile_updates():
         """
 
         params = []
+
+        # Filter by sync status (default: only unsynced)
+        if not include_synced:
+            query += " AND (synced_to_local IS NULL OR synced_to_local = 0)"
+
         if since:
             query += " AND updated_at >= ?"
             params.append(since)
@@ -658,6 +673,98 @@ def api_profile_updates():
 
     except Exception as e:
         logger.error(f"API error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/profile-updates/confirm', methods=['POST'])
+def confirm_sync():
+    """Confirm that updates have been synced to local database"""
+
+    if not DB_AVAILABLE:
+        return jsonify({'error': 'Database not available'}), 503
+
+    try:
+        data = request.get_json()
+        update_ids = data.get('update_ids', [])
+
+        if not update_ids:
+            return jsonify({'error': 'No update_ids provided'}), 400
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # Mark updates as synced
+        placeholders = ','.join('?' * len(update_ids))
+        cursor.execute(f"""
+            UPDATE ac_profile_updates
+            SET synced_to_local = 1,
+                synced_at = ?
+            WHERE update_id IN ({placeholders})
+        """, [datetime.now().isoformat()] + update_ids)
+
+        updated_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Marked {updated_count} updates as synced: {update_ids}")
+
+        return jsonify({
+            'success': True,
+            'updates_confirmed': updated_count
+        })
+
+    except Exception as e:
+        logger.error(f"Sync confirmation error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/profile-updates/cleanup', methods=['POST'])
+def cleanup_old_updates():
+    """Delete synced updates older than specified days"""
+
+    if not DB_AVAILABLE:
+        return jsonify({'error': 'Database not available'}), 503
+
+    try:
+        data = request.get_json() or {}
+        days_old = data.get('days_old', 30)  # Default: 30 days
+        dry_run = data.get('dry_run', True)  # Default: dry run
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        from datetime import timedelta
+        cutoff_date = (datetime.now() - timedelta(days=days_old)).isoformat()
+
+        # Count how many would be deleted
+        count_query = """
+            SELECT COUNT(*) FROM ac_profile_updates
+            WHERE synced_to_local = 1
+            AND synced_at < ?
+        """
+        count = cursor.execute(count_query, (cutoff_date,)).fetchone()[0]
+
+        if not dry_run:
+            # Actually delete
+            cursor.execute("""
+                DELETE FROM ac_profile_updates
+                WHERE synced_to_local = 1
+                AND synced_at < ?
+            """, (cutoff_date,))
+            conn.commit()
+            logger.info(f"Deleted {count} old synced updates (older than {days_old} days)")
+
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'would_delete' if dry_run else 'deleted': count,
+            'cutoff_date': cutoff_date,
+            'dry_run': dry_run
+        })
+
+    except Exception as e:
+        logger.error(f"Cleanup error: {e}")
         return jsonify({'error': str(e)}), 500
 
 
