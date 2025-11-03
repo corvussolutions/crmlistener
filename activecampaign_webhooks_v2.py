@@ -174,9 +174,10 @@ class WebhookProcessor:
         contact = payload.get('contact', {})
         field_values = contact.get('fieldValues', [])
 
+        # Support both camelCase (JSON) and snake_case (form-encoded)
         profile = {
-            'first_name': contact.get('firstName', ''),
-            'last_name': contact.get('lastName', ''),
+            'first_name': contact.get('firstName') or contact.get('first_name', ''),
+            'last_name': contact.get('lastName') or contact.get('last_name', ''),
             'email': contact.get('email', '').lower().strip(),
             'phone': contact.get('phone', ''),
         }
