@@ -587,9 +587,78 @@ def index():
         'status': 'running',
         'endpoints': {
             'health': '/health',
-            'webhook': '/webhook/activecampaign'
+            'webhook': '/webhook/activecampaign',
+            'api': '/api/profile-updates'
         }
     })
+
+
+@app.route('/api/profile-updates', methods=['GET'])
+def api_profile_updates():
+    """API endpoint to fetch profile updates for sync"""
+
+    if not DB_AVAILABLE:
+        return jsonify({
+            'error': 'Database not available (free tier mode)',
+            'updates': []
+        }), 503
+
+    try:
+        # Get optional query parameters
+        since = request.args.get('since')  # ISO datetime string
+        limit = request.args.get('limit', 1000, type=int)
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # Build query
+        query = """
+            SELECT
+                update_id,
+                person_id,
+                ac_contact_id,
+                field_name,
+                old_value,
+                new_value,
+                updated_at,
+                source
+            FROM ac_profile_updates
+            WHERE 1=1
+        """
+
+        params = []
+        if since:
+            query += " AND updated_at >= ?"
+            params.append(since)
+
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+
+        # Fetch updates
+        updates = []
+        for row in cursor.execute(query, params):
+            updates.append({
+                'update_id': row[0],
+                'person_id': row[1],
+                'ac_contact_id': row[2],
+                'field_name': row[3],
+                'old_value': row[4],
+                'new_value': row[5],
+                'updated_at': row[6],
+                'source': row[7]
+            })
+
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'count': len(updates),
+            'updates': updates
+        })
+
+    except Exception as e:
+        logger.error(f"API error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 if __name__ == '__main__':
